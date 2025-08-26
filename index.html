@@ -37,132 +37,103 @@
     </div>
   </div>
 
-<script>
-  const fmt = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' });
-  function todayISO(d=new Date()){ return d.toISOString().slice(0,10); }
+  <script>
+    const fmt = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' });
 
-  async function fetchDataFor(dateStr){
-    const resp = await fetch('/.netlify/functions/aspo', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ date: dateStr })
-    });
-    if(!resp.ok) throw new Error('Kunde nicht laden');
-    return await resp.json();
-  }
+    function todayISO(d=new Date()){ return d.toISOString().slice(0,10); }
+    function weekdayId(d=new Date()){ 
+      // Söndag=0 i JS, Trafikverket har Söndag=1, Måndag=2, ... Lördag=7
+      const jsDay = d.getDay(); 
+      return jsDay === 0 ? 1 : jsDay+1; 
+    }
 
-  // Försök plocka ut tider från flera möjliga fält/strukturer
-  function extractRowsFromRoute(route){
-    const rows = [];
-    const tt = route?.TimeTable ?? route?.Timetable ?? route?.Times ?? route?.Schedule ?? [];
+    async function fetchDataFor(){
+      const resp = await fetch('/.netlify/functions/aspo', { method: 'POST' });
+      if(!resp.ok) throw new Error('Konnte Daten nicht laden');
+      return await resp.json();
+    }
 
-    const pushRow = (t, dir, from, to) => {
-      if(!t) return;
-      const d = new Date(t); // funkar om det redan är ISO; annars skippar vi konstiga värden
-      if(!isNaN(d)) rows.push({ time: d, dir: dir || `${from||route?.FromHarbour}→${to||route?.ToHarbour}` });
-    };
+    function parseTRV(json){
+      const res = json?.RESPONSE?.RESULT || [];
+      const route = res.find(x=>x.FerryRoute)?.FerryRoute?.[0];
+      const rows = [];
 
-    // 1) Om tt är en array av objekt med välkända fält
-    if (Array.isArray(tt)) {
-      tt.forEach(item=>{
-        // Vanliga kandidater:
-        const dep =
-          item.DepartureTime || item.Departure || item.Time || item.StartTime || item.Start || item.datetime;
-        const dir =
-          item.Direction || (item.From && item.To && `${item.From}→${item.To}`);
-        pushRow(dep, dir, item.From, item.To);
-      });
-    } else if (tt && typeof tt === 'object') {
-      // 2) Om det ligger i undernycklar, t.ex. { Entries: [...] } eller { Rows: [...] }
-      const nestedList = tt.Entries || tt.Rows || tt.Times || tt.Items || [];
-      if(Array.isArray(nestedList)){
-        nestedList.forEach(item=>{
-          const dep =
-            item.DepartureTime || item.Departure || item.Time || item.StartTime || item.Start || item.datetime;
-          const dir =
-            item.Direction || (item.From && item.To && `${item.From}→${item.To}`);
-          pushRow(dep, dir, item.From, item.To);
+      if(route?.Timetable){
+        const today = new Date();
+        const todayStr = todayISO(today);
+        const wday = weekdayId(today);
+
+        route.Timetable.forEach(tt=>{
+          // Kontrollera att tidtabellen är giltig idag
+          const valid = tt.Valid?.some(v=>{
+            const from = new Date(v.From);
+            const to = new Date(v.To);
+            return today >= from && today < to;
+          });
+          if(!valid) return;
+
+          tt.Period?.forEach(period=>{
+            // Kontrollera om denna period gäller för dagens veckodag
+            const applies = period.Weekday?.some(w=> w.Id === wday);
+            if(!applies) return;
+
+            period.Schedule?.forEach(s=>{
+              if(s.Time && s.Harbor?.Name){
+                const dt = new Date(`${todayStr}T${s.Time}:00`);
+                rows.push({ time: dt, dir: s.Harbor.Name });
+              }
+            });
+          });
         });
       }
+
+      const ann = (res.find(x=>x.FerryAnnouncement)?.FerryAnnouncement) || [];
+      const notes = ann.map(a=>({
+        msg: a.Message || "",
+        start: a.StartTime ? new Date(a.StartTime) : null,
+        end: a.EndTime ? new Date(a.EndTime) : null,
+      }));
+
+      return { rows, notes };
     }
 
-    return rows;
-  }
-
-  function parseTRV(json){
-    const res = json?.RESPONSE?.RESULT || [];
-    const route = res.find(x=>x.FerryRoute)?.FerryRoute?.[0] || {};
-    const rows = extractRowsFromRoute(route);
-
-    const annList = (res.find(x=>x.FerryAnnouncement)?.FerryAnnouncement) || [];
-    const notes = annList.map(a=>({
-      msg: a.Message || '',
-      start: a.StartTime? new Date(a.StartTime): null,
-      end: a.EndTime? new Date(a.EndTime): null
-    }));
-
-    return { rows, notes, debug: json?.debug };
-  }
-
-  function render(byDir){
-    const tables = document.getElementById('tables');
-    const dirKeys = Object.keys(byDir);
-    if(!dirKeys.length){
-      tables.innerHTML = '<p class="muted">Keine Abfahrten gefunden.</p>';
-      return;
+    function render(byDir){
+      const tables = document.getElementById('tables');
+      const dirKeys = Object.keys(byDir);
+      if(!dirKeys.length){ tables.innerHTML = '<p class="muted">Keine Abfahrten gefunden.</p>'; return; }
+      tables.innerHTML = dirKeys.map(k=>{
+        const rows = byDir[k];
+        const trs = rows.map(r=>`<tr><td>${fmt.format(r.time)}</td><td class="muted">${k}</td></tr>`).join('');
+        return `<h3 style="margin:18px 0 6px">${k}</h3><table><thead><tr><th>Abfahrt</th><th class="muted">Richtung</th></tr></thead><tbody>${trs}</tbody></table>`;
+      }).join('');
     }
-    tables.innerHTML = dirKeys.map(k=>{
-      const rows = byDir[k];
-      const trs = rows.map(r=>`<tr><td>${fmt.format(r.time)}</td><td class="muted">${k}</td></tr>`).join('');
-      return `<h3 style="margin:18px 0 6px">${k}</h3><table><thead><tr><th>Abfahrt</th><th class="muted">Richtung</th></tr></thead><tbody>${trs}</tbody></table>`;
-    }).join('');
-  }
 
-  function groupByDirection(rows){
-    const byDir = {};
-    rows.forEach(r=>{ const k=r.dir||''; (byDir[k]=byDir[k]||[]).push(r); });
-    for(const k in byDir){ byDir[k].sort((a,b)=>a.time-b.time); }
-    return byDir;
-  }
+    function groupByDirection(rows){
+      const byDir = {};
+      rows.forEach(r=>{ const k=r.dir||''; (byDir[k]=byDir[k]||[]).push(r); });
+      for(const k in byDir){ byDir[k].sort((a,b)=>a.time-b.time); }
+      return byDir;
+    }
 
-  (async function(){
-    const dateStr = todayISO();
-    document.getElementById('stamp').textContent = new Date().toLocaleString('de-DE');
-    const statusEl = document.getElementById('status');
-    const tables = document.getElementById('tables');
-
-    try{
-      const json = await fetchDataFor(dateStr);
-      console.log('Rådata från funktionen:', json);
-
-      const data = parseTRV(json);
-      const byDir = groupByDirection(data.rows);
-
-      if (data.rows.length === 0) {
-        // Visa en liten felsökningsruta om inget hittas
-        const diag = `
-          <div style="margin-top:8px">
-            <div class="small muted">Keine Abfahrten extrahiert. Debug:</div>
-            <pre style="white-space:pre-wrap;font-size:12px;color:#9fb3d1;background:#0b1220;border:1px solid rgba(255,255,255,.08);padding:8px;border-radius:8px">
-${JSON.stringify({ debug: data.debug, sampleKeys: Object.keys((json?.RESPONSE?.RESULT?.find(r=>r.FerryRoute)?.FerryRoute?.[0]||{})) }, null, 2)}
-            </pre>
-          </div>`;
-        tables.innerHTML = `<p class="muted">Keine Abfahrten gefunden.</p>${diag}`;
-      } else {
+    (async function(){
+      document.getElementById('stamp').textContent = new Date().toLocaleString('de-DE');
+      try{
+        const json = await fetchDataFor();
+        const data = parseTRV(json);
+        const byDir = groupByDirection(data.rows);
         render(byDir);
-      }
 
-      const notes = document.getElementById('notes');
-      if(data.notes?.length){
-        notes.innerHTML = data.notes.map(n=>`⚠️ Hinweis: ${n.msg}`).join('<br>');
-      }
+        const notes = document.getElementById('notes');
+        if(data.notes?.length){
+          notes.innerHTML = data.notes.map(n=>`⚠️ Hinweis: ${n.msg}`).join('<br>');
+        }
 
-      statusEl.textContent = 'Daten geladen';
-    }catch(e){
-      statusEl.textContent = 'Konnte die Daten nicht laden.';
-      console.error(e);
-    }
-  })();
-</script>
+        document.getElementById('status').textContent = 'Daten geladen';
+      }catch(e){
+        document.getElementById('status').textContent = 'Konnte die Daten nicht laden.';
+        console.error(e);
+      }
+    })();
+  </script>
 </body>
 </html>
