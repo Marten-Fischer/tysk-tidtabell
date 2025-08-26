@@ -1,5 +1,5 @@
 // netlify/functions/aspo.js
-const ALLOW_ORIGIN = "https://xn--asp-una.nu"; // byt vid behov till din faktiska domän
+const ALLOW_ORIGIN = "aspo-zeitplan.netlify.app"; // byt vid behov till din faktiska domän
 
 function buildQuery(dateStr, apiKey) {
   return `
