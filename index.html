@@ -3,195 +3,48 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Aspö–Karlskrona Fähre (Aspöleden)</title>
+  <title>Aspö–Karlskrona Fähre – Fahrplan (DE)</title>
   <style>
     :root{--bg:#0b1220;--card:#121a2b;--muted:#8ba0c6;--accent:#8cc9ff}
     body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Helvetica,Arial,sans-serif;background:var(--bg);color:#fff}
     .wrap{max-width:860px;margin:0 auto;padding:24px}
-    .card{background:var(--card);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:20px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    .card{background:var(--card);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:22px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
     h1{font-size:clamp(22px,2.5vw,32px);line-height:1.2;margin:0 0 10px}
-    p.lead{color:var(--muted);margin:0 0 16px}
-    table{width:100%;border-collapse:collapse}
-    th,td{padding:10px 12px;border-bottom:1px solid rgba(255,255,255,.08)}
-    th{font-weight:600;text-align:left;color:#bcd0f5}
-    .muted{color:var(--muted)}
-    .small{font-size:12px}
-    .foot{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-top:12px}
-    .link{color:var(--accent);text-decoration:none}
-    .link:hover{text-decoration:underline}
-    .badge{font-size:12px;padding:4px 8px;border-radius:999px;background:rgba(140,201,255,.12);border:1px solid rgba(140,201,255,.35);color:#dff0ff}
+    p.lead{color:var(--muted);margin:0 0 18px}
+    .btns{display:grid;grid-template-columns:1fr;gap:12px;margin:14px 0 6px}
+    @media (min-width:560px){ .btns{grid-template-columns:1fr 1fr} }
+    a.btn{display:block;text-align:center;padding:14px 16px;border-radius:12px;border:1px solid rgba(140,201,255,.35);background:rgba(140,201,255,.12);color:#dff0ff;text-decoration:none;font-weight:600}
+    a.btn:hover{background:rgba(140,201,255,.18)}
+    .small{font-size:12px;color:var(--muted);margin-top:10px}
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
       <h1>Aspö–Karlskrona Fähre</h1>
-      <p class="lead">Kostenlose Straßenfähre zwischen Karlskrona und Aspö. Überfahrt ca. 25 Minuten. Unten findest du die heutigen Abfahrten.</p>
-      <div id="status" class="small">Lade Daten…</div>
-      <div id="tables"></div>
-      <div class="foot">
-        <span class="badge" id="stamp"></span>
-        <a class="link small" href="https://www.trafikverket.se/resa-och-trafik/farjetrafik/aspoleden/" target="_blank" rel="noopener">Quelle: Trafikverket</a>
+      <p class="lead">
+        Kostenlose Straßenfähre zwischen Karlskrona und Aspö (Überfahrt ca. 25 Minuten).
+        Unten findest du Links zum **Fahrplan auf Deutsch** (maschinell übersetzt).
+      </p>
+
+      <div class="btns">
+        <!-- Aspöledens förenklade sida via Google Translate -->
+        <a class="btn" target="_blank" rel="noopener"
+           href="https://translate.google.com/translate?sl=sv&tl=de&u=https://aspoleden.se/">
+          Fahrplan (aspoleden.se) – Deutsch
+        </a>
+
+        <!-- Trafikverket-sidan via Google Translate -->
+        <a class="btn" target="_blank" rel="noopener"
+           href="https://translate.google.com/translate?sl=sv&tl=de&u=https://www.trafikverket.se/resa-och-trafik/farjetrafik/aspoleden/">
+          Offizielle Infos (Trafikverket) – Deutsch
+        </a>
       </div>
-      <div id="notes" class="small muted" style="margin-top:8px"></div>
+
+      <p class="small">
+        Hinweis: Die Übersetzung wird von Google Translate erstellt. Bei Abweichungen gilt die schwedische Originalseite.
+      </p>
     </div>
   </div>
-
-<script>
-  // ---------- Datum/hjälpare ----------
-  const fmtTime = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' });
-  const fmtLongDate = new Intl.DateTimeFormat('de-DE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-
-  function toISODateLocal(d){
-    // Gör YYYY-MM-DD i lokal tid (så jämförelser funkar med TRV:s lokala tidsstämplar)
-    const z = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    const off = z.getTimezoneOffset();
-    const localMidnight = new Date(z.getTime() - off*60000);
-    return localMidnight.toISOString().slice(0,10);
-  }
-  function addDays(d, n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
-  // TRV: Söndag=1, Måndag=2, … Lördag=7
-  function tvWeekdayId(d){ const js = d.getDay(); return js === 0 ? 1 : js + 1; }
-
-  async function fetchFromFunction(){
-    const resp = await fetch('/.netlify/functions/aspo', { method:'POST' });
-    if(!resp.ok) throw new Error('Konnte Daten nicht laden');
-    return resp.json();
-  }
-
-  // ---------- Parser ----------
-  function rowsForSpecificDate(route, targetDate){
-    // Försök #1: strängt filter (Valid-intervallet + veckodag)
-    const rows = [];
-    if(!route?.Timetable) return rows;
-
-    const wd = tvWeekdayId(targetDate);
-    const iso = toISODateLocal(targetDate);
-
-    // Sätt start/slut som lokal midnatt → undvik “idag kl 23:xx” som slår ut intervallet
-    const startOfDay = new Date(`${iso}T00:00:00`);
-    const endOfDay   = new Date(`${iso}T23:59:59`);
-
-    route.Timetable.forEach(tt=>{
-      // Gäller intervallet någon del av den här dagen?
-      const validForDay = (tt.Valid || []).some(v=>{
-        const from = new Date(v.From);
-        const to   = new Date(v.To);
-        // överlappning mellan [from, to) och [startOfDay, endOfDay]
-        return from <= endOfDay && to > startOfDay;
-      });
-      if(!validForDay) return;
-
-      (tt.Period || []).forEach(period=>{
-        const applies = (period.Weekday || []).some(w => w.Id === wd);
-        if(!applies) return;
-
-        (period.Schedule || []).forEach(s=>{
-          if(!s.Time || !s.Harbor?.Name) return;
-          const dt = new Date(`${iso}T${s.Time}:00`);
-          if(!isNaN(dt)) rows.push({ time: dt, dir: s.Harbor.Name });
-        });
-      });
-    });
-
-    rows.sort((a,b)=>a.time-b.time);
-    return rows;
-  }
-
-  function rowsAll(route){
-    // Fallback: visa hela schemat (alla perioder, alla tider) som dagens datum
-    const rows = [];
-    if(!route?.Timetable) return rows;
-
-    const isoToday = toISODateLocal(new Date());
-
-    route.Timetable.forEach(tt=>{
-      (tt.Period || []).forEach(period=>{
-        (period.Schedule || []).forEach(s=>{
-          if(!s.Time || !s.Harbor?.Name) return;
-          const dt = new Date(`${isoToday}T${s.Time}:00`);
-          if(!isNaN(dt)) rows.push({ time: dt, dir: s.Harbor.Name });
-        });
-      });
-    });
-
-    rows.sort((a,b)=>a.time-b.time);
-    return rows;
-  }
-
-  function groupByDirection(rows){
-    const by = {};
-    for(const r of rows){
-      const key = r.dir; // "Karlskrona" resp. "Aspö"
-      (by[key] = by[key] || []).push(r);
-    }
-    for(const k in by){ by[k].sort((a,b)=>a.time-b.time); }
-    return by;
-  }
-
-  function renderTables(heading, byDir, isFallback=false){
-    const tables = document.getElementById('tables');
-    const keys = Object.keys(byDir);
-    if(!keys.length){
-      tables.innerHTML = `<p class="muted">${heading}</p><p class="muted">Keine Abfahrten gefunden.</p>`;
-      return;
-    }
-
-    const blocks = keys.map(k=>{
-      const rows = byDir[k];
-      const trs = rows.map(r=>`<tr><td>${fmtTime.format(r.time)}</td><td class="muted">${k}</td></tr>`).join('');
-      return `<h3 style="margin:18px 0 6px">${k}</h3>
-              <table>
-                <thead><tr><th>Abfahrt</th><th class="muted">Richtung</th></tr></thead>
-                <tbody>${trs}</tbody>
-              </table>`;
-    }).join('');
-
-    const fallbackNote = isFallback
-      ? `<p class="small muted" style="margin-top:4px">Hinweis: Keine passende Gültigkeit für das gewählte Datum gefunden. Zeige den gesamten Plan (ohne Datumsfilter).</p>`
-      : ``;
-
-    tables.innerHTML = `<p class="muted">${heading}</p>${blocks}${fallbackNote}`;
-  }
-
-  (async function(){
-    const statusEl = document.getElementById('status');
-    const stampEl  = document.getElementById('stamp');
-    const notesEl  = document.getElementById('notes');
-
-    // VÄLJ DAG HÄR:
-    // const targetDate = new Date();           // Heute
-    const targetDate = addDays(new Date(), 1);  // Morgen
-
-    stampEl.textContent = new Date().toLocaleString('de-DE');
-
-    try{
-      const full = await fetchFromFunction();
-      const route = full?.RESPONSE?.RESULT?.find(x=>x.FerryRoute)?.FerryRoute?.[0];
-      const ann   = (full?.RESPONSE?.RESULT?.find(x=>x.FerryAnnouncement)?.FerryAnnouncement) || [];
-
-      // Försök visa exakt vald dag
-      const rowsSelected = rowsForSpecificDate(route, targetDate);
-      if (rowsSelected.length > 0) {
-        const byDir = groupByDirection(rowsSelected);
-        renderTables(`Abfahrten für: ${fmtLongDate.format(targetDate)}`, byDir, false);
-      } else {
-        // Fallback: visa hela schemat (bättre än tomt)
-        const rowsEverything = rowsAll(route);
-        const byDirAll = groupByDirection(rowsEverything);
-        renderTables(`Gesamter Plan (ohne Datumsfilter)`, byDirAll, true);
-      }
-
-      if (ann.length){
-        notesEl.innerHTML = ann.map(a => `⚠️ Hinweis: ${a.Message||''}`).join('<br>');
-      }
-
-      statusEl.textContent = 'Daten geladen';
-    }catch(e){
-      console.error(e);
-      statusEl.textContent = 'Konnte die Daten nicht laden.';
-    }
-  })();
-</script>
 </body>
 </html>
