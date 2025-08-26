@@ -38,13 +38,19 @@
   </div>
 
 <script>
-  // --------- Datum/Hjälpare ----------
+  // ---------- Datum/hjälpare ----------
   const fmtTime = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' });
   const fmtLongDate = new Intl.DateTimeFormat('de-DE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
-  function isoDate(d){ return new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10); }
+  function toISODateLocal(d){
+    // Gör YYYY-MM-DD i lokal tid (så jämförelser funkar med TRV:s lokala tidsstämplar)
+    const z = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const off = z.getTimezoneOffset();
+    const localMidnight = new Date(z.getTime() - off*60000);
+    return localMidnight.toISOString().slice(0,10);
+  }
   function addDays(d, n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
-  // Trafikverket: Söndag=1, Måndag=2 ... Lördag=7
+  // TRV: Söndag=1, Måndag=2, … Lördag=7
   function tvWeekdayId(d){ const js = d.getDay(); return js === 0 ? 1 : js + 1; }
 
   async function fetchFromFunction(){
@@ -53,59 +59,79 @@
     return resp.json();
   }
 
-  // --------- Parser: plocka tider för en viss dag ----------
-  function rowsForDate(route, targetDate){
+  // ---------- Parser ----------
+  function rowsForSpecificDate(route, targetDate){
+    // Försök #1: strängt filter (Valid-intervallet + veckodag)
     const rows = [];
     if(!route?.Timetable) return rows;
 
-    const targetId = tvWeekdayId(targetDate);
-    const targetISO = isoDate(targetDate); // t.ex. 2025-08-27
+    const wd = tvWeekdayId(targetDate);
+    const iso = toISODateLocal(targetDate);
 
-    route.Timetable.forEach(tt => {
-      // Gäller denna timetable över huvud taget för den dagen?
-      const validForDate = (tt.Valid || []).some(v => {
+    // Sätt start/slut som lokal midnatt → undvik “idag kl 23:xx” som slår ut intervallet
+    const startOfDay = new Date(`${iso}T00:00:00`);
+    const endOfDay   = new Date(`${iso}T23:59:59`);
+
+    route.Timetable.forEach(tt=>{
+      // Gäller intervallet någon del av den här dagen?
+      const validForDay = (tt.Valid || []).some(v=>{
         const from = new Date(v.From);
         const to   = new Date(v.To);
-        // From <= target < To
-        return targetDate >= from && targetDate < to;
+        // överlappning mellan [from, to) och [startOfDay, endOfDay]
+        return from <= endOfDay && to > startOfDay;
       });
-      if(!validForDate) return;
+      if(!validForDay) return;
 
-      (tt.Period || []).forEach(period => {
-        const appliesToday = (period.Weekday || []).some(w => w.Id === targetId);
-        if(!appliesToday) return;
+      (tt.Period || []).forEach(period=>{
+        const applies = (period.Weekday || []).some(w => w.Id === wd);
+        if(!applies) return;
 
-        (period.Schedule || []).forEach(s => {
+        (period.Schedule || []).forEach(s=>{
           if(!s.Time || !s.Harbor?.Name) return;
-          // Bygg ett fullständigt datum/tid i lokal tid
-          const dt = new Date(`${targetISO}T${s.Time}:00`);
-          if (!isNaN(dt)) {
-            // Visa riktning som hamnens namn (“Karlskrona” resp. “Aspö”)
-            rows.push({ time: dt, dir: s.Harbor.Name });
-          }
+          const dt = new Date(`${iso}T${s.Time}:00`);
+          if(!isNaN(dt)) rows.push({ time: dt, dir: s.Harbor.Name });
         });
       });
     });
 
-    // Sortera tider
-    rows.sort((a,b)=>a.time - b.time);
+    rows.sort((a,b)=>a.time-b.time);
+    return rows;
+  }
+
+  function rowsAll(route){
+    // Fallback: visa hela schemat (alla perioder, alla tider) som dagens datum
+    const rows = [];
+    if(!route?.Timetable) return rows;
+
+    const isoToday = toISODateLocal(new Date());
+
+    route.Timetable.forEach(tt=>{
+      (tt.Period || []).forEach(period=>{
+        (period.Schedule || []).forEach(s=>{
+          if(!s.Time || !s.Harbor?.Name) return;
+          const dt = new Date(`${isoToday}T${s.Time}:00`);
+          if(!isNaN(dt)) rows.push({ time: dt, dir: s.Harbor.Name });
+        });
+      });
+    });
+
+    rows.sort((a,b)=>a.time-b.time);
     return rows;
   }
 
   function groupByDirection(rows){
     const by = {};
     for(const r of rows){
-      (by[r.dir] = by[r.dir] || []).push(r);
+      const key = r.dir; // "Karlskrona" resp. "Aspö"
+      (by[key] = by[key] || []).push(r);
     }
     for(const k in by){ by[k].sort((a,b)=>a.time-b.time); }
     return by;
   }
 
-  function renderTables(targetDate, byDir){
+  function renderTables(heading, byDir, isFallback=false){
     const tables = document.getElementById('tables');
     const keys = Object.keys(byDir);
-    const heading = `Abfahrten für: ${fmtLongDate.format(targetDate)}`;
-
     if(!keys.length){
       tables.innerHTML = `<p class="muted">${heading}</p><p class="muted">Keine Abfahrten gefunden.</p>`;
       return;
@@ -121,29 +147,40 @@
               </table>`;
     }).join('');
 
-    tables.innerHTML = `<p class="muted">${heading}</p>${blocks}`;
+    const fallbackNote = isFallback
+      ? `<p class="small muted" style="margin-top:4px">Hinweis: Keine passende Gültigkeit für das gewählte Datum gefunden. Zeige den gesamten Plan (ohne Datumsfilter).</p>`
+      : ``;
+
+    tables.innerHTML = `<p class="muted">${heading}</p>${blocks}${fallbackNote}`;
   }
 
   (async function(){
     const statusEl = document.getElementById('status');
-    const stampEl = document.getElementById('stamp');
-    const notesEl = document.getElementById('notes');
+    const stampEl  = document.getElementById('stamp');
+    const notesEl  = document.getElementById('notes');
 
-    // 👉 Byt här för vilken dag som ska visas:
-    // const targetDate = new Date();              // idag
-    const targetDate = addDays(new Date(), 1);     // imorgon
+    // VÄLJ DAG HÄR:
+    // const targetDate = new Date();           // Heute
+    const targetDate = addDays(new Date(), 1);  // Morgen
 
     stampEl.textContent = new Date().toLocaleString('de-DE');
 
     try{
       const full = await fetchFromFunction();
-
       const route = full?.RESPONSE?.RESULT?.find(x=>x.FerryRoute)?.FerryRoute?.[0];
       const ann   = (full?.RESPONSE?.RESULT?.find(x=>x.FerryAnnouncement)?.FerryAnnouncement) || [];
 
-      const rows = rowsForDate(route, targetDate);
-      const byDir = groupByDirection(rows);
-      renderTables(targetDate, byDir);
+      // Försök visa exakt vald dag
+      const rowsSelected = rowsForSpecificDate(route, targetDate);
+      if (rowsSelected.length > 0) {
+        const byDir = groupByDirection(rowsSelected);
+        renderTables(`Abfahrten für: ${fmtLongDate.format(targetDate)}`, byDir, false);
+      } else {
+        // Fallback: visa hela schemat (bättre än tomt)
+        const rowsEverything = rowsAll(route);
+        const byDirAll = groupByDirection(rowsEverything);
+        renderTables(`Gesamter Plan (ohne Datumsfilter)`, byDirAll, true);
+      }
 
       if (ann.length){
         notesEl.innerHTML = ann.map(a => `⚠️ Hinweis: ${a.Message||''}`).join('<br>');
