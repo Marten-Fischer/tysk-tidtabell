@@ -13,21 +13,34 @@ async function trvPost(xml) {
     headers: { "Content-Type": "text/xml" },
     body: xml.replace(/\n\s+/g, " "),
   });
+
   const text = await resp.text();
 
-  // Trafikverket returnerar JSON (text). Försök parsa, annars kasta ett tydligt fel.
+  // 1) Försök parsa svaret en gång
+  let parsed;
   try {
-    const json = JSON.parse(text);
-    if (!resp.ok) {
-      // API svarade med felstatus men JSON – bubbla upp orsak i body
-      throw new Error(`TRV error ${resp.status}: ${text}`);
-    }
-    return json;
+    parsed = JSON.parse(text);
   } catch (e) {
-    // Om JSON.parse faller, logga första biten av text för diagnos
-    console.error("Kunde inte parsa TRV-svar som JSON:", text.slice(0, 400));
+    console.error("Kunde inte JSON-parsa TRV-svar (försök 1):", text.slice(0, 400));
     throw new Error(`Ogiltigt TRV-svar / status ${resp.status}`);
   }
+
+  // 2) Om resultatet i sig är en sträng (dvs JSON-inuti-sträng), parsa en gång till
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch (e2) {
+      console.error("Kunde inte JSON-parsa TRV-svar (försök 2):", String(parsed).slice(0, 400));
+      throw new Error(`Ogiltigt TRV-svar (double-parse) / status ${resp.status}`);
+    }
+  }
+
+  if (!resp.ok) {
+    console.error("TRV error status:", resp.status, "body snippet:", text.slice(0, 400));
+    throw new Error(`TRV error ${resp.status}`);
+  }
+
+  return parsed;
 }
 
 /** Bygger XML för FerryRoute (dagens tidtabell för Aspöleden) */
