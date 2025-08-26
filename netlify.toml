@@ -1,0 +1,9 @@
+[build]
+  publish = "."
+  functions = "netlify/functions"
+
+# Valfritt: gör att /zeitplan laddar index.html
+[[redirects]]
+  from = "/zeitplan"
+  to = "/index.html"
+  status = 200
