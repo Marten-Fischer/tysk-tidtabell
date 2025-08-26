@@ -1,49 +1,36 @@
 // netlify/functions/aspo.js
 
-// Släpp CORS fritt medan vi felsöker. När allt funkar: byt till din domän.
-// ex: const ALLOW_ORIGIN = "https://aspo-zeitplan.netlify.app";
+// Släpp CORS under felsökning. Byt till din domän när allt funkar:
+// ex. const ALLOW_ORIGIN = "https://aspo-zeitplan.netlify.app";
 const ALLOW_ORIGIN = "*";
-
 const TRV_URL = "https://api.trafikinfo.trafikverket.se/v2/data.json";
 
-/** Hjälpare: gör ett POST-anrop till Trafikverket med given XML och returnerar JSON-parsat svar */
+/** Försöker parsa JSON en eller två gånger (TRV kan ibland komma som "JSON i sträng"). */
+function safeParse(text) {
+  try {
+    const once = JSON.parse(text);
+    if (typeof once === "string") {
+      try { return JSON.parse(once); } catch { return null; }
+    }
+    return once;
+  } catch {
+    return null;
+  }
+}
+
+/** POST:ar XML till TRV, returnerar { ok, status, text, json } utan att kasta. */
 async function trvPost(xml) {
   const resp = await fetch(TRV_URL, {
     method: "POST",
     headers: { "Content-Type": "text/xml" },
     body: xml.replace(/\n\s+/g, " "),
   });
-
   const text = await resp.text();
-
-  // 1) Försök parsa svaret en gång
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch (e) {
-    console.error("Kunde inte JSON-parsa TRV-svar (försök 1):", text.slice(0, 400));
-    throw new Error(`Ogiltigt TRV-svar / status ${resp.status}`);
-  }
-
-  // 2) Om resultatet i sig är en sträng (dvs JSON-inuti-sträng), parsa en gång till
-  if (typeof parsed === "string") {
-    try {
-      parsed = JSON.parse(parsed);
-    } catch (e2) {
-      console.error("Kunde inte JSON-parsa TRV-svar (försök 2):", String(parsed).slice(0, 400));
-      throw new Error(`Ogiltigt TRV-svar (double-parse) / status ${resp.status}`);
-    }
-  }
-
-  if (!resp.ok) {
-    console.error("TRV error status:", resp.status, "body snippet:", text.slice(0, 400));
-    throw new Error(`TRV error ${resp.status}`);
-  }
-
-  return parsed;
+  const json = safeParse(text);
+  return { ok: resp.ok, status: resp.status, text, json };
 }
 
-/** Bygger XML för FerryRoute (dagens tidtabell för Aspöleden) */
+/** XML för FerryRoute (Aspöleden + tidtabell) */
 function buildRouteXML(apiKey) {
   return `
   <REQUEST>
@@ -61,10 +48,8 @@ function buildRouteXML(apiKey) {
   </REQUEST>`;
 }
 
-/** Bygger XML för FerryAnnouncement (meddelanden för Aspöleden samma dag) */
-function buildAnnouncementXML(dateStr, apiKey) {
-  // Vi börjar enkelt: bara route + message (utan tidfilter).
-  // När detta fungerar kan vi lägga till datumfilter igen om du vill.
+/** XML för FerryAnnouncement (börjar enkelt: bara RouteName + Message) */
+function buildAnnouncementXML(apiKey) {
   return `
   <REQUEST>
     <LOGIN authenticationkey="${apiKey}" />
@@ -88,60 +73,62 @@ export async function handler(event) {
     "Access-Control-Allow-Headers": "Content-Type",
     "Content-Type": "application/json",
   };
-
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 200, headers, body: "" };
   }
 
-  // Datum från klienten (fallback till idag)
-  let dateStr;
-  try {
-    const payload = JSON.parse(event.body || "{}");
-    dateStr = payload.date || new Date().toISOString().slice(0, 10);
-  } catch {
-    dateStr = new Date().toISOString().slice(0, 10);
-  }
+  // (datumet används inte i den enkla Announcement-frågan ännu)
+  try { JSON.parse(event.body || "{}"); } catch {}
 
   const apiKey = process.env.TRV_API_KEY;
   if (!apiKey) {
-    return {
-      statusCode: 500,
-      headers,
-      body: JSON.stringify({ error: "Saknar TRV_API_KEY i miljövariabler" }),
-    };
+    return { statusCode: 500, headers, body: JSON.stringify({ error: "Saknar TRV_API_KEY i miljövariabler" }) };
   }
 
-  try {
-    // 1) Hämta FerryRoute (tidtabell)
-    const routeJson = await trvPost(buildRouteXML(apiKey));
-    // 2) Hämta FerryAnnouncement (meddelanden) – enkel filter på RouteName
-    const annJson = await trvPost(buildAnnouncementXML(dateStr, apiKey));
+  // 1) Hämta tidtabell (måste lyckas)
+  const routeRes = await trvPost(buildRouteXML(apiKey));
+  const ferryRoute = routeRes.json?.RESPONSE?.RESULT?.find(r => r.FerryRoute)?.FerryRoute || [];
 
-    // Din HTML förväntar sig formatet:
-    // { "RESPONSE": { "RESULT": [ { "FerryRoute":[...] }, { "FerryAnnouncement":[...] } ] } }
-    const ferryRoute = routeJson?.RESPONSE?.RESULT?.find(r => r.FerryRoute)?.FerryRoute || [];
-    const ferryAnnouncement = annJson?.RESPONSE?.RESULT?.find(r => r.FerryAnnouncement)?.FerryAnnouncement || [];
-
-    const combined = {
-      RESPONSE: {
-        RESULT: [
-          { FerryRoute: ferryRoute },
-          { FerryAnnouncement: ferryAnnouncement },
-        ],
-      },
-    };
-
+  // Om tidtabellen inte kom tillbaka som JSON → skicka tydlig diagnos till klienten men 200-status,
+  // så att sidan kan visa fel utan att krascha.
+  if (!routeRes.ok || !ferryRoute) {
     return {
       statusCode: 200,
       headers,
-      body: JSON.stringify(combined),
-    };
-  } catch (err) {
-    console.error("Fel i aspo-funktion:", err);
-    return {
-      statusCode: 500,
-      headers,
-      body: JSON.stringify({ error: String(err?.message || err) }),
+      body: JSON.stringify({
+        RESPONSE: { RESULT: [ { FerryRoute: [] }, { FerryAnnouncement: [] } ] },
+        debug: {
+          routeOk: routeRes.ok,
+          routeStatus: routeRes.status,
+          routeSnippet: routeRes.text?.slice(0, 300) || null
+        }
+      })
     };
   }
+
+  // 2) Försök hämta meddelanden (om det misslyckas → tom lista, inget 500)
+  const annRes = await trvPost(buildAnnouncementXML(apiKey));
+  const ferryAnnouncement =
+    annRes.ok
+      ? (annRes.json?.RESPONSE?.RESULT?.find(r => r.FerryAnnouncement)?.FerryAnnouncement || [])
+      : [];
+
+  // 3) Returnera i formatet din HTML redan förväntar sig
+  return {
+    statusCode: 200,
+    headers,
+    body: JSON.stringify({
+      RESPONSE: {
+        RESULT: [
+          { FerryRoute: ferryRoute },
+          { FerryAnnouncement: ferryAnnouncement }
+        ]
+      },
+      // liten felsökningsruta (ignoreras av din parser)
+      debug: {
+        routeOk: routeRes.ok, routeStatus: routeRes.status,
+        annOk: annRes.ok, annStatus: annRes.status
+      }
+    })
+  };
 }
