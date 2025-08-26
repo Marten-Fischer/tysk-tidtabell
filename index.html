@@ -53,49 +53,37 @@
       return await resp.json();
     }
 
-    function parseTRV(json){
-      const res = json?.RESPONSE?.RESULT || [];
-      const route = res.find(x=>x.FerryRoute)?.FerryRoute?.[0];
-      const rows = [];
+function parseTRV(json){
+  const res = json?.RESPONSE?.RESULT || [];
+  const route = res.find(x=>x.FerryRoute)?.FerryRoute?.[0];
+  const rows = [];
 
-      if(route?.Timetable){
-        const today = new Date();
-        const todayStr = todayISO(today);
-        const wday = weekdayId(today);
-
-        route.Timetable.forEach(tt=>{
-          // Kontrollera att tidtabellen är giltig idag
-          const valid = tt.Valid?.some(v=>{
-            const from = new Date(v.From);
-            const to = new Date(v.To);
-            return today >= from && today < to;
-          });
-          if(!valid) return;
-
-          tt.Period?.forEach(period=>{
-            // Kontrollera om denna period gäller för dagens veckodag
-            const applies = period.Weekday?.some(w=> w.Id === wday);
-            if(!applies) return;
-
-            period.Schedule?.forEach(s=>{
-              if(s.Time && s.Harbor?.Name){
-                const dt = new Date(`${todayStr}T${s.Time}:00`);
-                rows.push({ time: dt, dir: s.Harbor.Name });
-              }
-            });
-          });
+  if(route?.Timetable){
+    route.Timetable.forEach(tt=>{
+      tt.Period?.forEach(period=>{
+        period.Schedule?.forEach(s=>{
+          if(s.Time && s.Harbor?.Name){
+            // Lägg in även datum för idag, men bry dig inte om "Valid" eller veckodag
+            const todayStr = todayISO(new Date());
+            const dt = new Date(`${todayStr}T${s.Time}:00`);
+            rows.push({ time: dt, dir: s.Harbor.Name, rawPeriod: period.Name });
+          }
         });
-      }
+      });
+    });
+  }
 
-      const ann = (res.find(x=>x.FerryAnnouncement)?.FerryAnnouncement) || [];
-      const notes = ann.map(a=>({
-        msg: a.Message || "",
-        start: a.StartTime ? new Date(a.StartTime) : null,
-        end: a.EndTime ? new Date(a.EndTime) : null,
-      }));
+  console.log("DEBUG rows:", rows); // skriv ut i browserns console
 
-      return { rows, notes };
-    }
+  const ann = (res.find(x=>x.FerryAnnouncement)?.FerryAnnouncement) || [];
+  const notes = ann.map(a=>({
+    msg: a.Message || "",
+    start: a.StartTime ? new Date(a.StartTime) : null,
+    end: a.EndTime ? new Date(a.EndTime) : null,
+  }));
+
+  return { rows, notes };
+}
 
     function render(byDir){
       const tables = document.getElementById('tables');
