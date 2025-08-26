@@ -37,91 +37,124 @@
     </div>
   </div>
 
-  <script>
-    const fmt = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' });
+<script>
+  // --------- Datum/Hjälpare ----------
+  const fmtTime = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' });
+  const fmtLongDate = new Intl.DateTimeFormat('de-DE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
-    function todayISO(d=new Date()){ return d.toISOString().slice(0,10); }
-    function weekdayId(d=new Date()){ 
-      // Söndag=0 i JS, Trafikverket har Söndag=1, Måndag=2, ... Lördag=7
-      const jsDay = d.getDay(); 
-      return jsDay === 0 ? 1 : jsDay+1; 
-    }
+  function isoDate(d){ return new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10); }
+  function addDays(d, n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
+  // Trafikverket: Söndag=1, Måndag=2 ... Lördag=7
+  function tvWeekdayId(d){ const js = d.getDay(); return js === 0 ? 1 : js + 1; }
 
-    async function fetchDataFor(){
-      const resp = await fetch('/.netlify/functions/aspo', { method: 'POST' });
-      if(!resp.ok) throw new Error('Konnte Daten nicht laden');
-      return await resp.json();
-    }
+  async function fetchFromFunction(){
+    const resp = await fetch('/.netlify/functions/aspo', { method:'POST' });
+    if(!resp.ok) throw new Error('Konnte Daten nicht laden');
+    return resp.json();
+  }
 
-function parseTRV(json){
-  const res = json?.RESPONSE?.RESULT || [];
-  const route = res.find(x=>x.FerryRoute)?.FerryRoute?.[0];
-  const rows = [];
+  // --------- Parser: plocka tider för en viss dag ----------
+  function rowsForDate(route, targetDate){
+    const rows = [];
+    if(!route?.Timetable) return rows;
 
-  if(route?.Timetable){
-    route.Timetable.forEach(tt=>{
-      tt.Period?.forEach(period=>{
-        period.Schedule?.forEach(s=>{
-          if(s.Time && s.Harbor?.Name){
-            // Lägg in även datum för idag, men bry dig inte om "Valid" eller veckodag
-            const todayStr = todayISO(new Date());
-            const dt = new Date(`${todayStr}T${s.Time}:00`);
-            rows.push({ time: dt, dir: s.Harbor.Name, rawPeriod: period.Name });
+    const targetId = tvWeekdayId(targetDate);
+    const targetISO = isoDate(targetDate); // t.ex. 2025-08-27
+
+    route.Timetable.forEach(tt => {
+      // Gäller denna timetable över huvud taget för den dagen?
+      const validForDate = (tt.Valid || []).some(v => {
+        const from = new Date(v.From);
+        const to   = new Date(v.To);
+        // From <= target < To
+        return targetDate >= from && targetDate < to;
+      });
+      if(!validForDate) return;
+
+      (tt.Period || []).forEach(period => {
+        const appliesToday = (period.Weekday || []).some(w => w.Id === targetId);
+        if(!appliesToday) return;
+
+        (period.Schedule || []).forEach(s => {
+          if(!s.Time || !s.Harbor?.Name) return;
+          // Bygg ett fullständigt datum/tid i lokal tid
+          const dt = new Date(`${targetISO}T${s.Time}:00`);
+          if (!isNaN(dt)) {
+            // Visa riktning som hamnens namn (“Karlskrona” resp. “Aspö”)
+            rows.push({ time: dt, dir: s.Harbor.Name });
           }
         });
       });
     });
+
+    // Sortera tider
+    rows.sort((a,b)=>a.time - b.time);
+    return rows;
   }
 
-  console.log("DEBUG rows:", rows); // skriv ut i browserns console
+  function groupByDirection(rows){
+    const by = {};
+    for(const r of rows){
+      (by[r.dir] = by[r.dir] || []).push(r);
+    }
+    for(const k in by){ by[k].sort((a,b)=>a.time-b.time); }
+    return by;
+  }
 
-  const ann = (res.find(x=>x.FerryAnnouncement)?.FerryAnnouncement) || [];
-  const notes = ann.map(a=>({
-    msg: a.Message || "",
-    start: a.StartTime ? new Date(a.StartTime) : null,
-    end: a.EndTime ? new Date(a.EndTime) : null,
-  }));
+  function renderTables(targetDate, byDir){
+    const tables = document.getElementById('tables');
+    const keys = Object.keys(byDir);
+    const heading = `Abfahrten für: ${fmtLongDate.format(targetDate)}`;
 
-  return { rows, notes };
-}
-
-    function render(byDir){
-      const tables = document.getElementById('tables');
-      const dirKeys = Object.keys(byDir);
-      if(!dirKeys.length){ tables.innerHTML = '<p class="muted">Keine Abfahrten gefunden.</p>'; return; }
-      tables.innerHTML = dirKeys.map(k=>{
-        const rows = byDir[k];
-        const trs = rows.map(r=>`<tr><td>${fmt.format(r.time)}</td><td class="muted">${k}</td></tr>`).join('');
-        return `<h3 style="margin:18px 0 6px">${k}</h3><table><thead><tr><th>Abfahrt</th><th class="muted">Richtung</th></tr></thead><tbody>${trs}</tbody></table>`;
-      }).join('');
+    if(!keys.length){
+      tables.innerHTML = `<p class="muted">${heading}</p><p class="muted">Keine Abfahrten gefunden.</p>`;
+      return;
     }
 
-    function groupByDirection(rows){
-      const byDir = {};
-      rows.forEach(r=>{ const k=r.dir||''; (byDir[k]=byDir[k]||[]).push(r); });
-      for(const k in byDir){ byDir[k].sort((a,b)=>a.time-b.time); }
-      return byDir;
-    }
+    const blocks = keys.map(k=>{
+      const rows = byDir[k];
+      const trs = rows.map(r=>`<tr><td>${fmtTime.format(r.time)}</td><td class="muted">${k}</td></tr>`).join('');
+      return `<h3 style="margin:18px 0 6px">${k}</h3>
+              <table>
+                <thead><tr><th>Abfahrt</th><th class="muted">Richtung</th></tr></thead>
+                <tbody>${trs}</tbody>
+              </table>`;
+    }).join('');
 
-    (async function(){
-      document.getElementById('stamp').textContent = new Date().toLocaleString('de-DE');
-      try{
-        const json = await fetchDataFor();
-        const data = parseTRV(json);
-        const byDir = groupByDirection(data.rows);
-        render(byDir);
+    tables.innerHTML = `<p class="muted">${heading}</p>${blocks}`;
+  }
 
-        const notes = document.getElementById('notes');
-        if(data.notes?.length){
-          notes.innerHTML = data.notes.map(n=>`⚠️ Hinweis: ${n.msg}`).join('<br>');
-        }
+  (async function(){
+    const statusEl = document.getElementById('status');
+    const stampEl = document.getElementById('stamp');
+    const notesEl = document.getElementById('notes');
 
-        document.getElementById('status').textContent = 'Daten geladen';
-      }catch(e){
-        document.getElementById('status').textContent = 'Konnte die Daten nicht laden.';
-        console.error(e);
+    // 👉 Byt här för vilken dag som ska visas:
+    // const targetDate = new Date();              // idag
+    const targetDate = addDays(new Date(), 1);     // imorgon
+
+    stampEl.textContent = new Date().toLocaleString('de-DE');
+
+    try{
+      const full = await fetchFromFunction();
+
+      const route = full?.RESPONSE?.RESULT?.find(x=>x.FerryRoute)?.FerryRoute?.[0];
+      const ann   = (full?.RESPONSE?.RESULT?.find(x=>x.FerryAnnouncement)?.FerryAnnouncement) || [];
+
+      const rows = rowsForDate(route, targetDate);
+      const byDir = groupByDirection(rows);
+      renderTables(targetDate, byDir);
+
+      if (ann.length){
+        notesEl.innerHTML = ann.map(a => `⚠️ Hinweis: ${a.Message||''}`).join('<br>');
       }
-    })();
-  </script>
+
+      statusEl.textContent = 'Daten geladen';
+    }catch(e){
+      console.error(e);
+      statusEl.textContent = 'Konnte die Daten nicht laden.';
+    }
+  })();
+</script>
 </body>
 </html>
