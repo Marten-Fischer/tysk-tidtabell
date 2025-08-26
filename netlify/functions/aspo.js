@@ -15,20 +15,6 @@ function buildQuery(dateStr, apiKey) {
       <INCLUDE>ToHarbour</INCLUDE>
       <INCLUDE>TimeTable</INCLUDE>
     </QUERY>
-    <QUERY objecttype="FerryAnnouncement" schemaversion="1.2">
-      <FILTER>
-        <AND>
-          <GT name="EndTime" value="${dateStr}T00:00:00" />
-          <LT name="StartTime" value="${dateStr}T23:59:59" />
-          <LIKE name="RouteName" value="%Aspöleden%" />
-        </AND>
-      </FILTER>
-      <INCLUDE>RouteName</INCLUDE>
-      <INCLUDE>StartTime</INCLUDE>
-      <INCLUDE>EndTime</INCLUDE>
-      <INCLUDE>Message</INCLUDE>
-      <INCLUDE>Priority</INCLUDE>
-    </QUERY>
   </REQUEST>
   `.replace(/\n\s+/g, ' ');
 }
