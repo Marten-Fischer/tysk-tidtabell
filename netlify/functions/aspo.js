@@ -39,10 +39,7 @@ function buildRouteXML(apiKey) {
       <FILTER>
         <EQ name="Name" value="Aspöleden" />
       </FILTER>
-      <INCLUDE>Id</INCLUDE>
       <INCLUDE>Name</INCLUDE>
-      <INCLUDE>FromHarbour</INCLUDE>
-      <INCLUDE>ToHarbour</INCLUDE>
       <INCLUDE>TimeTable</INCLUDE>
     </QUERY>
   </REQUEST>`;
