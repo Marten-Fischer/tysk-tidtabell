@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Aspö–Karlskrona Fähre (Aspöleden)</title>
+  <style>
+    :root{--bg:#0b1220;--card:#121a2b;--muted:#8ba0c6;--accent:#8cc9ff}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Helvetica,Arial,sans-serif;background:var(--bg);color:#fff}
+    .wrap{max-width:860px;margin:0 auto;padding:24px}
+    .card{background:var(--card);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:20px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    h1{font-size:clamp(22px,2.5vw,32px);line-height:1.2;margin:0 0 10px}
+    p.lead{color:var(--muted);margin:0 0 16px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:10px 12px;border-bottom:1px solid rgba(255,255,255,.08)}
+    th{font-weight:600;text-align:left;color:#bcd0f5}
+    .muted{color:var(--muted)}
+    .small{font-size:12px}
+    .foot{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-top:12px}
+    .link{color:var(--accent);text-decoration:none}
+    .link:hover{text-decoration:underline}
+    .badge{font-size:12px;padding:4px 8px;border-radius:999px;background:rgba(140,201,255,.12);border:1px solid rgba(140,201,255,.35);color:#dff0ff}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Aspö–Karlskrona Fähre</h1>
+      <p class="lead">Kostenlose Straßenfähre zwischen Karlskrona und Aspö. Überfahrt ca. 25 Minuten. Unten findest du die heutigen Abfahrten.</p>
+      <div id="status" class="small">Lade Daten…</div>
+      <div id="tables"></div>
+      <div class="foot">
+        <span class="badge" id="stamp"></span>
+        <a class="link small" href="https://www.trafikverket.se/resa-och-trafik/farjetrafik/aspoleden/" target="_blank" rel="noopener">Quelle: Trafikverket</a>
+      </div>
+      <div id="notes" class="small muted" style="margin-top:8px"></div>
+    </div>
+  </div>
+
+  <script>
+    const fmt = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' });
+    function todayISO(d=new Date()){ return d.toISOString().slice(0,10); }
+
+    async function fetchDataFor(dateStr){
+      const resp = await fetch('/.netlify/functions/aspo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: dateStr })
+      });
+      if(!resp.ok) throw new Error('Kunde nicht laden');
+      return await resp.json();
+    }
+
+    function parseTRV(json){
+      const res = json?.RESPONSE?.RESULT || [];
+      const route = res.find(x=>x.FerryRoute)?.FerryRoute?.[0] || {};
+      const timetable = route?.TimeTable || [];
+      const rows = [];
+      (timetable||[]).forEach(tt => {
+        const dep = tt.DepartureTime || tt.Time || tt.StartTime;
+        const dir = tt.Direction || `${tt.From || route?.FromHarbour}→${tt.To || route?.ToHarbour}`;
+        if(dep){ rows.push({time:new Date(dep), dir}); }
+      });
+      const ann = (res.find(x=>x.FerryAnnouncement)?.FerryAnnouncement)||[];
+      const notes = ann.map(a=>({ msg:a.Message||'', start:a.StartTime?new Date(a.StartTime):null, end:a.EndTime?new Date(a.EndTime):null }));
+      return { rows, notes };
+    }
+
+    function render(byDir){
+      const tables = document.getElementById('tables');
+      const dirKeys = Object.keys(byDir);
+      if(!dirKeys.length){ tables.innerHTML = '<p class="muted">Keine Abfahrten gefunden.</p>'; return; }
+      tables.innerHTML = dirKeys.map(k=>{
+        const rows = byDir[k];
+        const trs = rows.map(r=>`<tr><td>${fmt.format(r.time)}</td><td class="muted">${k}</td></tr>`).join('');
+        return `<h3 style="margin:18px 0 6px">${k}</h3><table><thead><tr><th>Abfahrt</th><th class="muted">Richtung</th></tr></thead><tbody>${trs}</tbody></table>`;
+      }).join('');
+    }
+
+    function groupByDirection(rows){
+      const byDir = {};
+      rows.forEach(r=>{ const k=r.dir||''; (byDir[k]=byDir[k]||[]).push(r); });
+      for(const k in byDir){ byDir[k].sort((a,b)=>a.time-b.time); }
+      return byDir;
+    }
+
+    (async function(){
+      const dateStr = todayISO();
+      document.getElementById('stamp').textContent = new Date().toLocaleString('de-DE');
+      try{
+        const json = await fetchDataFor(dateStr);
+        const data = parseTRV(json);
+        const byDir = groupByDirection(data.rows);
+        render(byDir);
+        const notes = document.getElementById('notes');
+        if(data.notes?.length){
+          notes.innerHTML = data.notes.map(n=>`⚠️ Hinweis: ${n.msg}`).join('<br>');
+        }
+        document.getElementById('status').textContent = 'Daten geladen';
+      }catch(e){
+        document.getElementById('status').textContent = 'Konnte die Daten nicht laden.';
+        console.error(e);
+      }
+    })();
+  </script>
+</body>
+</html>
